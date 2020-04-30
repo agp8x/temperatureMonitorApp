@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Map;
 
 public class MainActivity extends AppCompatActivity implements MyService.ServiceListener {
-//https://developer.android.com/guide/topics/connectivity/bluetooth-le#java
+    //https://developer.android.com/guide/topics/connectivity/bluetooth-le#java
     private static final int REQUEST_ENABLE_BT = 1234;
     private static final String TAG = "ESP32";
     private static final int REQUEST_ALLOW_LOCATION = 4321;
@@ -47,7 +47,7 @@ public class MainActivity extends AppCompatActivity implements MyService.Service
     private final BroadcastReceiver gattUpdateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            Log.d(TAG, "onReceive: "+ intent.getAction());
+            Log.d(TAG, "onReceive: " + intent.getAction());
         }
     };
 
@@ -101,21 +101,21 @@ public class MainActivity extends AppCompatActivity implements MyService.Service
     }
 
     public void refreshBTN(View view) {
-        Map<Integer, List<Integer>> data = new HashMap<>(service.getData());
+        HashMap<Integer, Measurement> data = new HashMap<>(service.getLatestData());
         LinearLayout ll = findViewById(R.id.linearLayout);
         ll.removeAllViews();
-        Log.wtf(TAG, "DATA: "+ data);
-        for (Map.Entry<Integer, List<Integer>> sensor : data.entrySet()) {
+        Log.wtf(TAG, "DATA: " + data);
+        for (Map.Entry<Integer, Measurement> sensor : data.entrySet()) {
             //LinearLayout line = (LinearLayout) LinearLayout.inflate(this, R.layout.sensor_line, ll);
             LinearLayout line = new LinearLayout(this);
             TextView number = new TextView(this);
-            number.setText(String.valueOf(sensor.getKey()));
+            number.setText(String.valueOf(sensor.getKey() + 1));
             line.addView(number);
             TextView placeholder = new TextView(this);
             placeholder.setText("  ");
             line.addView(placeholder);
             TextView value = new TextView(this);
-            Double v = sensor.getValue().get(sensor.getValue().size() - 1) / 100.0;
+            Double v = sensor.getValue().getValue();
             Log.wtf(TAG, "refreshBTN: " + v);
             value.setText(String.valueOf(getString(R.string.degree, v)));
             line.addView(value);

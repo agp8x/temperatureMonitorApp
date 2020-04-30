@@ -22,12 +22,13 @@ import android.util.Log;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+
+import static org.agp8x.android.esp32temperature.Constants.ENVIONMENTAL_SENSING_UUID;
 
 public class MyService extends Service {
     private boolean isScanning;
@@ -36,75 +37,12 @@ public class MyService extends Service {
     private BluetoothLeScanner scanner;
     private List<BluetoothDevice> devices;
     private Map<BluetoothGatt, MyCallback> gatts;
-    private ScanCallback leScanCallback = new ScanCallback() {
-        @Override
-        public void onScanResult(int callbackType, ScanResult result) {
-            Log.d(TAG, "onBatchScanResults(" + callbackType + "," + result + "): " + info(result));
-            if (!devices.contains(result.getDevice())) {
-                devices.add(result.getDevice());
-                connect();
-            }
-        }
-
-        private String info(ScanResult result) {
-            StringBuilder sb = new StringBuilder();
-            sb.append(result.getDevice().getName()).append(": ").append(result.getDevice().getAddress());
-            sb.append(" (");
-            if (result.getDevice().getUuids() != null) {
-                for (ParcelUuid uuid : result.getDevice().getUuids()) {
-                    sb.append(uuid.toString()).append("; ");
-                }
-                sb.append(")");
-            }
-            return sb.toString();
-        }
-
-        @Override
-        public void onBatchScanResults(List<ScanResult> results) {
-            Log.d(TAG, "onBatchScanResults(" + results.size() + ")");
-            for (ScanResult result : results) {
-                onScanResult(-1, result);
-            }
-        }
-
-        @Override
-        public void onScanFailed(int errorCode) {
-            Log.e(TAG, "scan failed (" + errorCode + ")");
-        }
-    };
-
-
-    private final IBinder binder = new LocalBinder();
-    private final List<ServiceListener> listeners;
-    private final Map<Integer,List<Integer>> data;
-
-    public MyService() {
-        handler = new Handler();
-        devices = new ArrayList<>();
-        gatts = new HashMap<>();
-        listeners = new ArrayList<>();
-        data = new ConcurrentHashMap<>();
-    }
-
-    private void notifyListeners(){
-        for (ServiceListener listener : listeners) {
-            if (listener != null) {
-                try {
-                    listener.handleUpdate();
-                }catch (Exception e){
-                    Log.e(TAG, "notifyListeners: exceptional", e);
-                }
-            }
-        }
-    }
-
+    private ScanCallback leScanCallback = new MyScanCallback();
     private static final String TAG = "ESP32_S";
     private int connectionState = STATE_DISCONNECTED;
-
     private static final int STATE_DISCONNECTED = 0;
     private static final int STATE_CONNECTING = 1;
     private static final int STATE_CONNECTED = 2;
-
     public final static String ACTION_GATT_CONNECTED =
             "com.example.bluetooth.le.ACTION_GATT_CONNECTED";
     public final static String ACTION_GATT_DISCONNECTED =
@@ -115,39 +53,62 @@ public class MyService extends Service {
             "com.example.bluetooth.le.ACTION_DATA_AVAILABLE";
     public final static String EXTRA_DATA =
             "com.example.bluetooth.le.EXTRA_DATA";
+    public final List<UUID> characteristicWhitelist;
+    private final IBinder binder = new LocalBinder();
+    private final List<ServiceListener> listeners;
+    private final Map<Integer, List<Measurement>> data; // TODO: use map for latest value, store history with timestamps
+    private final Map<Integer, Measurement> latestData;
 
-    public final static UUID TEPERATURE_UUID = UUID.fromString("00002a6e-0000-1000-8000-00805f9b34fb");
+    public MyService() {
+        handler = new Handler();
+        devices = new ArrayList<>();
+        gatts = new HashMap<>();
+        listeners = new ArrayList<>();
+        data = new ConcurrentHashMap<>();
+        characteristicWhitelist = Constants.projectSensors();
+        latestData = new HashMap<>();
+    }
 
+    private void notifyListeners() {
+        for (ServiceListener listener : listeners) {
+            if (listener != null) {
+                try {
+                    listener.handleUpdate();
+                } catch (Exception e) {
+                    Log.e(TAG, "notifyListeners: exceptional", e);
+                }
+            }
+        }
+    }
 
-    private void broadcastUpdate(String action, BluetoothGatt gatt, int index) {
+    private void broadcastUpdate(String action, BluetoothGatt gatt) {
         Log.d(TAG, "broadcastUpdate_: " + action);
         Intent intent = new Intent(action);
         sendBroadcast(intent);
     }
 
-    private void broadcastUpdate(String action, BluetoothGattCharacteristic characteristic, BluetoothGatt gatt, int index) {
-        Log.d(TAG, "broadcastUpdate: " + action + "@ gatt (" + gatt + ")[" + index + " ||| " + characteristic);
+    private void broadcastUpdate(String action, BluetoothGattCharacteristic characteristic, BluetoothGatt gatt) {
+        Log.d(TAG, "broadcastUpdate: " + action + "@ gatt (" + gatt + ") ||| " + characteristic);
         Intent intent = new Intent(action);
         //TODO: add data
         Log.d(TAG, "broadcastUpdate raw: " + Arrays.toString(characteristic.getValue()));
-        Log.d(TAG, "broadcastUpdate uuid: " + characteristic.getUuid());
-        if (!TEPERATURE_UUID.equals(characteristic.getUuid())){
+        UUID uuid = characteristic.getUuid();
+        Log.d(TAG, "broadcastUpdate uuid: " + uuid);
+        if (!characteristicWhitelist.contains(uuid)) {
+            Log.wtf(TAG, "broadcastUpdate: FAILED for "+uuid.toString());
             return;
         }
-        Log.d(TAG, "broadcastUpdate instance: " + characteristic.getInstanceId());
-        index = characteristic.getInstanceId();
+        int instanceId = characteristic.getInstanceId();
+        Log.d(TAG, "broadcastUpdate instance: " + instanceId);
+        int index = characteristicWhitelist.indexOf(uuid);
         int value = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_SINT16, 0);
+        Measurement m = new Measurement(uuid, instanceId, index, value);
+        latestData.put(index, m);
         Log.d(TAG, "broadcastUpdate sint16: " + value);
-        if (!data.containsKey(index)){
-            data.put(index, new ArrayList<Integer>());
+        if (!data.containsKey(index)) {
+            data.put(index, new ArrayList<Measurement>());
         }
-        data.get(index).add(value);
-        try {
-            double value2 = characteristic.getFloatValue(BluetoothGattCharacteristic.FORMAT_FLOAT, 0);
-            Log.d(TAG, "broadcastUpdate float: " + value2);
-        } catch (Exception e) {
-            // Log.e(TAG, "broadcastUpdate: ", e);
-        }
+        data.get(index).add(m);
         notifyListeners();
         sendBroadcast(intent);
     }
@@ -191,7 +152,8 @@ public class MyService extends Service {
             }, SCAN_PERIOD);
             isScanning = true;
             ScanSettings settings = new ScanSettings.Builder().build(); //TODO: change settings?
-            ArrayList<ScanFilter> filters = new ArrayList<>(); //TODO: restrict?
+            ArrayList<ScanFilter> filters = new ArrayList<>();
+           // filters.add(new ScanFilter.Builder().setDeviceName("mpy-temp").setServiceUuid(new ParcelUuid(ENVIONMENTAL_SENSING_UUID)).build());
             scanner.startScan(filters, settings, leScanCallback);
         } else {
             isScanning = false;
@@ -201,8 +163,7 @@ public class MyService extends Service {
 
     public void connect() {
         for (BluetoothDevice device : devices) {
-            int index = devices.indexOf(device);
-            MyCallback cb = new MyCallback(index);
+            MyCallback cb = new MyCallback();
             BluetoothGatt gatt = device.connectGatt(this, true, cb);
             gatts.put(gatt, cb);
             Log.d(TAG, "connect: " + gatt + cb);
@@ -211,28 +172,32 @@ public class MyService extends Service {
         }
     }
 
-    public Map<Integer, List<Integer>> getData() {
+    public Map<Integer, List<Measurement>> getData() {
         return data;
     }
-    public void clearData(){
+
+    public Map<Integer, Measurement> getLatestData() {
+        return latestData;
+    }
+
+    public void clearData() {
         data.clear();
     }
-    public void addListener(ServiceListener sl){
+
+    public void addListener(ServiceListener sl) {
         listeners.add(sl);
     }
-    public void removeListener(ServiceListener sl){
+
+    public void removeListener(ServiceListener sl) {
         listeners.remove(sl);
     }
 
 
-    public class MyCallback extends BluetoothGattCallback {
+    public interface ServiceListener {
+        public void handleUpdate();
+    }
 
-        private final int index;
-
-        public MyCallback(int index) {
-            super();
-            this.index = index;
-        }
+    private class MyCallback extends BluetoothGattCallback {
 
         @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status,
@@ -241,7 +206,7 @@ public class MyService extends Service {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 intentAction = ACTION_GATT_CONNECTED;
                 connectionState = STATE_CONNECTED;
-                broadcastUpdate(intentAction, gatt, index);
+                broadcastUpdate(intentAction, gatt);
                 Log.i(TAG, "Connected to GATT server.");
                 Log.i(TAG, "Attempting to start service discovery:" +
                         gatt.discoverServices());
@@ -250,7 +215,7 @@ public class MyService extends Service {
                 intentAction = ACTION_GATT_DISCONNECTED;
                 connectionState = STATE_DISCONNECTED;
                 Log.i(TAG, "Disconnected from GATT server.");
-                broadcastUpdate(intentAction, gatt, index);
+                broadcastUpdate(intentAction, gatt);
             }
         }
 
@@ -258,7 +223,7 @@ public class MyService extends Service {
         // New services discovered
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                broadcastUpdate(ACTION_GATT_SERVICES_DISCOVERED, gatt, index);
+                broadcastUpdate(ACTION_GATT_SERVICES_DISCOVERED, gatt);
                 for (BluetoothGattService service : gatt.getServices()) {
                     for (BluetoothGattCharacteristic characteristic : service.getCharacteristics()) {
                         Log.d(TAG, "onServicesDiscovered: " + characteristic);
@@ -278,18 +243,51 @@ public class MyService extends Service {
                                          int status) {
             Log.d(TAG, "onCharacteristicRead: " + characteristic);
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic, gatt, index);
+                broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic, gatt);
             }
         }
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
             Log.d(TAG, "onCharacteristicChanged: " + characteristic);
-            broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic, gatt, index);
+            broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic, gatt);
         }
     }
 
-    public interface ServiceListener {
-        public void handleUpdate();
+    private class MyScanCallback extends ScanCallback {
+        @Override
+        public void onScanResult(int callbackType, ScanResult result) {
+            Log.d(TAG, "onBatchScanResults(" + callbackType + "," + result + "): " + info(result));
+            if (!devices.contains(result.getDevice())) {
+                devices.add(result.getDevice());
+                connect();
+            }
+        }
+
+        private String info(ScanResult result) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(result.getDevice().getName()).append(": ").append(result.getDevice().getAddress());
+            sb.append(" (");
+            if (result.getDevice().getUuids() != null) {
+                for (ParcelUuid uuid : result.getDevice().getUuids()) {
+                    sb.append(uuid.toString()).append("; ");
+                }
+                sb.append(")");
+            }
+            return sb.toString();
+        }
+
+        @Override
+        public void onBatchScanResults(List<ScanResult> results) {
+            Log.d(TAG, "onBatchScanResults(" + results.size() + ")");
+            for (ScanResult result : results) {
+                onScanResult(-1, result);
+            }
+        }
+
+        @Override
+        public void onScanFailed(int errorCode) {
+            Log.e(TAG, "scan failed (" + errorCode + ")");
+        }
     }
 }
