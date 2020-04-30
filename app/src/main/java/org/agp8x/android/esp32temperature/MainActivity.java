@@ -110,6 +110,8 @@ public class MainActivity extends AppCompatActivity implements MyService.Service
             LinearLayout line = new LinearLayout(this);
             TextView number = new TextView(this);
             number.setText(String.valueOf(sensor.getKey() + 1));
+            float size = 28f;
+            number.setTextSize(size);
             line.addView(number);
             TextView placeholder = new TextView(this);
             placeholder.setText("  ");
@@ -118,6 +120,7 @@ public class MainActivity extends AppCompatActivity implements MyService.Service
             Double v = sensor.getValue().getValue();
             Log.wtf(TAG, "refreshBTN: " + v);
             value.setText(String.valueOf(getString(R.string.degree, v)));
+            value.setTextSize(size);
             line.addView(value);
             ll.addView(line);
         }

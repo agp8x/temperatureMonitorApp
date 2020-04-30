@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">ESP32 Temperature</string>
+    <string name="app_name">ESP32 BLE Temperature</string>
     <string name="degree">%1$f °C</string>
 </resources>
