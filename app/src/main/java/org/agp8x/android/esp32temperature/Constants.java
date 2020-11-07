@@ -1,6 +1,7 @@
 package org.agp8x.android.esp32temperature;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -8,7 +9,7 @@ import java.util.concurrent.TimeoutException;
 
 public final class Constants {
 
-    private static List<UUID> sensors;
+    public static List<UUID> sensors;
 
     private Constants() {
     }
@@ -27,7 +28,7 @@ public final class Constants {
     public final static UUID ENVIONMENTAL_SENSING_UUID = UUID.fromString(ENVIRONMENTAL_SENSING);
     
     public static List<UUID> projectSensors(){
-        if (sensors == null) {
+      /*  if (sensors == null) {
             sensors = new ArrayList<>(5);
             sensors.add(TEMPERATURE_UUID);
             sensors.add(SCIENTIFIC_TEMPERATURE_UUID);
@@ -35,6 +36,19 @@ public final class Constants {
             sensors.add(INTERMEDITA_TEMPERATURE_UUID);
             sensors.add(TEMPERATURE_MEASUREMENT_UUID);
         }
-        return new ArrayList<>(sensors);
-    } 
+        return new ArrayList<>(sensors);*/
+        return sensors;
+    }
+
+    static {
+        if (sensors == null) {
+            sensors = new ArrayList<>(5);
+            sensors.add(TEMPERATURE_UUID);
+            sensors.add(SCIENTIFIC_TEMPERATURE_UUID);
+            sensors.add(TEMPERATURE_CELSIUS_UUID);
+            sensors.add(INTERMEDITA_TEMPERATURE_UUID);
+            sensors.add(TEMPERATURE_MEASUREMENT_UUID);
+            sensors = Collections.unmodifiableList(sensors);
+        }
+    }
 }

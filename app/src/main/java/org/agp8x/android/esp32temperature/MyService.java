@@ -1,5 +1,9 @@
 package org.agp8x.android.esp32temperature;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
@@ -7,19 +11,27 @@ import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
+import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.ParcelFileDescriptor;
 import android.os.ParcelUuid;
 import android.util.Log;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -31,6 +43,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.agp8x.android.esp32temperature.Constants.ENVIONMENTAL_SENSING_UUID;
 
 public class MyService extends Service {
+    private static final String CHANNEL_ID = "ESP32Temp";
+    private static final String CHANNEL = "ESP32TempChannel";
+    private static final int ONGOING_NOTIFICATION_ID = 124567;
     private boolean isScanning;
     private static final long SCAN_PERIOD = 10_000;
     private Handler handler;
@@ -44,20 +59,22 @@ public class MyService extends Service {
     private static final int STATE_CONNECTING = 1;
     private static final int STATE_CONNECTED = 2;
     public final static String ACTION_GATT_CONNECTED =
-            "com.example.bluetooth.le.ACTION_GATT_CONNECTED";
+            "org.agp8x.android.esp32temperature.ble.ACTION_GATT_CONNECTED";
     public final static String ACTION_GATT_DISCONNECTED =
-            "com.example.bluetooth.le.ACTION_GATT_DISCONNECTED";
+            "org.agp8x.android.esp32temperature.ble.ACTION_GATT_DISCONNECTED";
     public final static String ACTION_GATT_SERVICES_DISCOVERED =
-            "com.example.bluetooth.le.ACTION_GATT_SERVICES_DISCOVERED";
+            "org.agp8x.android.esp32temperature.ble.ACTION_GATT_SERVICES_DISCOVERED";
     public final static String ACTION_DATA_AVAILABLE =
-            "com.example.bluetooth.le.ACTION_DATA_AVAILABLE";
+            "org.agp8x.android.esp32temperature.ble.ACTION_DATA_AVAILABLE";
     public final static String EXTRA_DATA =
-            "com.example.bluetooth.le.EXTRA_DATA";
+            "org.agp8x.android.esp32temperature.ble.EXTRA_DATA";
     public final List<UUID> characteristicWhitelist;
     private final IBinder binder = new LocalBinder();
     private final List<ServiceListener> listeners;
     private final Map<Integer, List<Measurement>> data; // TODO: use map for latest value, store history with timestamps
     private final Map<Integer, Measurement> latestData;
+    private BluetoothManager bluetoothManager;
+    private BluetoothAdapter bluetoothAdapter;
 
     public MyService() {
         handler = new Handler();
@@ -95,22 +112,37 @@ public class MyService extends Service {
         UUID uuid = characteristic.getUuid();
         Log.d(TAG, "broadcastUpdate uuid: " + uuid);
         if (!characteristicWhitelist.contains(uuid)) {
-            Log.wtf(TAG, "broadcastUpdate: FAILED for "+uuid.toString());
+            Log.wtf(TAG, "broadcastUpdate: FAILED for " + uuid.toString());
             return;
         }
-        int instanceId = characteristic.getInstanceId();
-        Log.d(TAG, "broadcastUpdate instance: " + instanceId);
-        int index = characteristicWhitelist.indexOf(uuid);
-        int value = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_SINT16, 0);
-        Measurement m = new Measurement(uuid, instanceId, index, value);
-        latestData.put(index, m);
-        Log.d(TAG, "broadcastUpdate sint16: " + value);
-        if (!data.containsKey(index)) {
-            data.put(index, new ArrayList<Measurement>());
+        Log.d(TAG, "broadcastUpdate instance: " + characteristic.getInstanceId());
+        Measurement m = new Measurement(characteristic);
+        Log.d(TAG, "broadcastUpdate sint16: " + m.getValue());
+        latestData.put(m.getIndex(), m);
+        if (!data.containsKey(m.getIndex())) {
+            data.put(m.getIndex(), new ArrayList<Measurement>());
         }
-        data.get(index).add(m);
+        data.get(m.getIndex()).add(m);
         notifyListeners();
         sendBroadcast(intent);
+        try {
+            write(m);
+        } catch (IOException e) {
+            e.printStackTrace();
+            Log.e(TAG, "write exception", e);
+        }
+    }
+
+    private void write(Measurement m) throws IOException {
+        File f = new File(getApplicationContext().getExternalFilesDir(null), "text.csv");
+        String path = f.getAbsolutePath();
+        FileWriter fw = new FileWriter(path, true);
+        BufferedWriter bw = new BufferedWriter(fw);
+        bw.append(m.toCSV());
+        bw.newLine();
+        bw.flush();
+        bw.close();
+        fw.close();
     }
 
     @Override
@@ -118,9 +150,52 @@ public class MyService extends Service {
         return binder;
     }
 
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        Log.w(TAG, "Services onCreate runs!!!!!!!!!!!1");
+        createNotificationChannel();
+        // https://developer.android.com/guide/components/services#Foreground
+
+        Intent notificationIntent = new Intent(this, MainActivity.class);
+        PendingIntent pendingIntent = PendingIntent.getActivity(getApplicationContext(), 0, notificationIntent, 0);
+
+        Notification notification = new Notification.Builder(this, CHANNEL)
+                .setContentTitle(getString(R.string.notification_name))
+                .setContentText(getString(R.string.notification_content))
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentIntent(pendingIntent)
+                .setTicker(getString(R.string.notification_ticker))
+                .setChannelId(CHANNEL_ID)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build();
+        startForeground(ONGOING_NOTIFICATION_ID, notification);
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        return super.onStartCommand(intent, flags, startId);
+        super.onStartCommand(intent, flags, startId);
+        return START_REDELIVER_INTENT;
+    }
+
+
+    /**
+     * https://developer.android.com/guide/topics/ui/notifiers/notifications#ManageChannels
+     * https://developer.android.com/training/notify-user/channels
+     */
+    private void createNotificationChannel() {
+        String description = getString(R.string.notification_channel_desc);
+        int importance = NotificationManager.IMPORTANCE_HIGH;
+        NotificationChannel channel = new NotificationChannel(CHANNEL_ID, CHANNEL, importance);
+        channel.setDescription(description);
+        channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        NotificationManager notificationManager = getSystemService(NotificationManager.class);
+        if (notificationManager != null) {
+            notificationManager.createNotificationChannel(channel);
+        } else {
+            Log.w(TAG, "createNotificationChannel: notificationManager is null!");
+        }
     }
 
     @Override
@@ -138,7 +213,18 @@ public class MyService extends Service {
         }
     }
 
-    public void scanLeDevice(final boolean enable, BluetoothAdapter bluetoothAdapter) {
+    public BluetoothAdapter getAdapter(){
+        if (bluetoothManager != null) {
+            return bluetoothManager.getAdapter();
+        }
+        return null;
+    }
+
+    public void scanLeDevice(final boolean enable) {
+
+        bluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+        bluetoothAdapter = bluetoothManager.getAdapter();
+
         if (scanner == null) {
             scanner = bluetoothAdapter.getBluetoothLeScanner();
         }
@@ -153,7 +239,7 @@ public class MyService extends Service {
             isScanning = true;
             ScanSettings settings = new ScanSettings.Builder().build(); //TODO: change settings?
             ArrayList<ScanFilter> filters = new ArrayList<>();
-           // filters.add(new ScanFilter.Builder().setDeviceName("mpy-temp").setServiceUuid(new ParcelUuid(ENVIONMENTAL_SENSING_UUID)).build());
+            // filters.add(new ScanFilter.Builder().setDeviceName("mpy-temp").setServiceUuid(new ParcelUuid(ENVIONMENTAL_SENSING_UUID)).build());
             scanner.startScan(filters, settings, leScanCallback);
         } else {
             isScanning = false;

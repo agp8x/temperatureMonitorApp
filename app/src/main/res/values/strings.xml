@@ -1,4 +1,8 @@
 <resources>
     <string name="app_name">ESP32 BLE Temperature</string>
     <string name="degree">%1$f °C</string>
+    <string name="notification_channel_desc">ESP Temp notifcation</string>
+    <string name="notification_ticker">esp32 ticker text</string>
+    <string name="notification_content">esp 32 context text</string>
+    <string name="notification_name">esp32 notification name</string>
 </resources>
